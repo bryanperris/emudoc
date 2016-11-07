@@ -1,0 +1,450 @@
+MIPS R4300I Processor (Modifed R4200 core)
+Nintendo 64 Core Processor
+/////////////////////////////////////////////////
+32-bit / 64-bit ALU
+32-bit / 64-bit FPU IEEE 754-1985
+Co-Processor 0: Control System and MMU
+Co-Processor 1: FPU
+Cache Line: 8 Kbyte per cache, instruction and data
+Pipeline is efficient resulting close execution speed of 1 instruction per cycle
+JTAG Debugger Interface
+Assuming Primary and Secondary Cache States: Valid and Dirty
+Assuming Multiprocessor Cache Coherency States: Uncached, Noncoherent
+64-bit memory bus
+64-bit virtual addressing
+64-bit registers
+
+R4300I Specifics
+Improved integer multipler
+3.3V rating
+32-bit bus
+
+Data Term Definitions
+Byte - 8bit
+HalfWord - 16bit
+Word - 32bit
+Doubleword - 64bit
+
+https://lh5.googleusercontent.com/rs4rZvb2x1kOfX4ejqxJ0dlvH1lmLp0reSYUVBvUO5VV6aAAnZCeyyT-WEQNLjkOE7zHlEqDOVDA3SI=w1920-h903-rw
+
+Details
+//////////////////////////////////////////////////
+Big Endian memory byte order
+Exception/Control registers
+Hardware TLB
+Memory Mangement registers
+CPU - Load Aligner/Store Driver
+CPU - Integer Multiplier/Divider
+CPU - Address Unit
+CPU - PC Incrementer
+Secondary Cache
+Primary Cache: instruction and data
+FPU Supported Features: Registers, Pipeline Bypass, Multiplier, Divider, Add, Convert, Square Root
+FPU operates in parallel: 2 instructions per cycle
+
+Control Processor 0
+32 special function registers
+TLB virtual to physical address translation
+Exception processing
+State transition: Kernel, Supervisor, User
+Cache Control: Error and diagnose
+
+Control Processor 1: FPU
+32 FPU Registers (Float/Double Mode)
+
+System Interface (SysAD Bus)
+DRAM interface with or without cache depending on uniprocessor/multiprocessor mode
+64-bit multiplexed address and data bus
+8 check bits
+9-bit parity-protected command bus
+8 handshake signals
+Interface data rate peaks at 400 Mbytes per second when clocked at 50Mhz
+
+
+CPU Registers
+32 general purpose registers (32/64 mode)
+-- R0 is always reads 0
+-- R31 is the link register
+PC counter (32/64 modes)
+2 registers (32/64 mode) that hold mul/div results:
+-- L0: Product
+-- LO/HI: Quotient and remainder
+
+CPU Instruction Formats (4 bytes)
+Immediate: op(5), rs(5), rt(5), immediate (16)
+Jump: op(5), target(26)
+Register: op(5), rs(5), rt(5), rd(5), sa(5), funct(6)
+
+Special Instructions
+LWCz/SWCx - Load/Store Word coprocessor z
+MTCz/MFCz - Move to/from coprocessor z
+CTCz/CFCz - Move control to/from coprocessor z
+COPz - coprocessor operation z
+BCzT/BCzF - branch true/false on coprocessor z (Testing if coprocessor exists?)
+System Call - call a routine from vector table
+Break - breakpoint, fire off break vector
+BCzTL/BCzFL - branch on coprocessor z true/false likely
+Doubleword instructions for ALU/Link/Conditional/Shift/CopZ
+Trap - exception instructions
+LDCz/SDCz - Move double from/to coprocessor z
+CP0: TLB/Control instructions
+
+
+MMU Notes:
+32bit addressing (4GB Max memory): virtual address space divided between kernel and user, 2 Gbytes for each
+64bit addressing (1TB max memory): virtual address space is expanded to 1TB of user space
+
+TLB Notes:
+48 available entries
+TLB Entry: maps a pair of varible-sized pages (4KB to 16MB) in multples of 4 (contains an odd and even memory page)
+Each entry is tagged with the most-significent bits of virtual address, the number of these bits is based on page sized
+TLB entries are access/mapped based on operating modes: kernel, user, and supervisor
+
+Instruction TLB:
+Invisible to software
+2-entry TLB used to increase performence
+
+Jumping: Computing the abolute address
+Address = (Target << 2) | (32bit (PC >> 28) & 0xF or 64bit PC >> 60)
+In J-type format, the 26-bit target address shifts left 2 bits and 
+combines with the high-order 4 bits of the current program counter to form an absolute address.
+
+Braching: Compute the adddress
+Address = (delay slot address) + (((16 bit offset) << 2) -> 32 bit sign extended)
+All branches occur with the delay of one instruction
+branch delay slots are nullifed (bypassed) if a conditional branch is not 'likely' taken
+
+All branch instruction target addresses are computed by adding theaddress of the instruction in the delay slot to the 16-bitoffset (shifted left2 bits and sign-extended to 32 bits).  All branches occur with a delay of oneinstruction.If a conditional branch likely is not taken, the instruction in the delay slotis nullified.
+
+N64 PC/Addressing Note: We will use 64bit address, but process them as 32bit unsigned values
+
+Secondary Cache
+Uses direct mapping, addressed with the lower bits of the physical address
+
+Cache Lines
+Each cache has a its own 64-bit data line, and can be accessed in parallel
+Access can happen twice a cycle
+It is noted that the primary size ranges: 8KB to 32KB
+Some CPU models offer connections to an external cache, with cache control/protection circults built in (don't think n64 uses this)
+
+Load Delay Slots - When loading a value from memory to a register, the following instruction using the value must be scheduled on the load delay Slots
+When the load is complete, the load delay slot is executed
+Delayed load instructions do not allow its result to be used immediate by the next instruction, the delay slot, so if an instruction does, this causes
+the interlock to add more clock cycles.
+
+64-bit Operation for CPU
+32-bit operands must be sign-extended (padding the new upper bits based on sign bit): 1000 0001 -> 1111 1111 1000 0001
+Zero-Extension: When writing a 32bit value in a 64bit register, the upper unused bits are cleared
+
+/* Op | Total Cycles | Overlap Cycles
+-----------------------------------------
+MULT     12             10
+MULTU    12             10
+DIV      75             0
+DIVU     75             0
+DMULT    20             18
+DMULTU   20             18
+DDIV     139            0
+DDIVU    139            0
+*/
+
+Pipeline / Timing
+------------------
+Pipeline has 8 stages, and runs twice the frequency of the master clock
+Timing of instructions are determined by PCycles (Pipeline cycles)
+Each instruction takes 8 cycles to complete
+Branch delay time: 3 cycles
+Load delay time: 2 cycles
+
+Instruction Engine
+1. Fetch instruction into cache (also ITLB for address translation)
+2. Decode instruction, check for interlocks, check cache tag with ITLB Page frame number, and load any operands from registers
+3. Execution: ALU computation, compute data virual address L/S, compute branch and virtual address of target
+4. Only for non register to register instructions: TLB address translations for data and branch targets
+5. Only for non R to R instructions: Cache tag check, check physical address against cache for a miss or hit
+6: Write back: (ignores branches), write result to register
+
+Faults and exceptions
+Pipeline is interrupted during: Exceptions, Cache Misses, and Data dependencies
+Interlocks: Hardware fault handlers such as when cache misses happen
+Stall: halt the entire Pipeline
+Slip: Advanced part of the pipeline, while other parts are held static
+Exceptions: Software based interrupts to pipeline
+External Stalls: interlocks that are caused by external components, not affected by pipeline or instruction
+At every cycle, interlocks and exception conditions are checked
+
+Timing of exceptions/interlocks: When handling, it takes 4 cycles to evaluate, resolve, buffer the problem
+//
+Processor will figure out timing optimizations for interlock/exception servicing
+   * The processor can backup in the pipeline
+   * Service an interlock of an aborted instruction due to an exception
+
+Note: When a fault happens, the instruction is aborted, the servicing begins (at the stage its checked): evaluate, resolve, buffer
+List of faults:
+----------------------
+MultiProcessor stalls occur anytime and not at specific instruction or pipe stages
+Instruction TLB Miss: Stall - IS
+Instruction Cache Miss: Stall - RF
+Coprocessor Possible Exception: Stall - DF
+Integer Sign Extend: Stall - DF
+Store Interlock: Stall - DF
+Data Cache Miss: Stall - TC
+Watch Address Exception: Stall - TC
+Load Interlock: Slip - RF
+Multiply Unit Busy: Slip - RF
+Divide Unit Busy: Slip - RF
+Multiply / Divide One-Cycle: Slip - RF
+Shift greater than 32bits: Slip - RF
+FP Busy: Slip - RF
+ITLB - Instruction/Data Address: Exception - RF
+External Interrupt: Exception - EX
+Instruction Bus Error: Exception - EX
+IVA Coherent: Exception - EX
+Illegal Instruction: Exception - EX
+Breakpoint: Exception - EX
+Systemcall: Exception - EX
+CoProcessor Unusable: Exception - EX
+Instruction ECC Error: Exception - EX
+
+Special Cases for performence during fault servicing
+Address Acceleration: Bypass the first cache (avoid cache miss fault), send to Secondary cache, uses more energy but saves, can save up to 2 cycles
+the subsequent instruction miss address is predicted to be a simple increment of the previous miss address
+
+Uncached Stores: R4000: CPU stalls until the data has been written off chip during WB stage, R4000: this doesn't stall the pipeline
+
+If uncached store is used in a loop, 2 instructions in the branch latency area are killed off.
+
+Memory Mangement Unit (MMU)
+Uses TLB cache for translating addresses
+All load/stores use virtual addresses
+virtual address can map to: TLB cache, cached system bus, uncached system bus
+
+Page frame translations
+[V X] w/ Offset -> [P Y] + offset eg: 
+a 4K virtual page could map to a 4K page allocated at 0x80000000 (RDRAM)
+
+Cop0 provides a register/instruction based interface for software
+TLB can map 96 pages (48 entries of odd/even page pairs)
+Cache is checked for matching virtual address extended with ASID
+Possible Page size modes (multples of 4): 4K, 16K, 64K, 256K, 1M, 4M, 16M
+When an entry is hit, the physical address is computed from (PFN * pagesize) + virtual address
+When there is a miss, a TLB refill exception is thrown, to tell the OS to refill or update the cache (selected or random entry)
+Duplicate entries can cause TLB to disable itself, TB = 1 in status register of Cop0
+Virtual addresses can be 32-bit or 64-bit based on operating mode
+TLB Entry: G (global bit), ASID (identifier), VPN (page number for virtual page), offset (offset in page), pfn (page number of physical page)
+Hit: G, ASID, VPN input matches an entry, returns PFN value
+ASID: 8-bit address space identifier to reduce TLB flushing.  The OS can group entries in the same ASID, so it can safely assume they all exist in the same context without affect performence
+When comparing VPNs, first all global marked entries are compared first, then non-globals are compared using ASID.
+
+Translation math based on page size register
+Page Size = 2 ^ X
+VPN operand size = X
+32bit Mode: Offset size = 32 - 8 (asid) - 3 (KSU bits) - X
+64bit Mode: Offset size = 64 - 24 (KSU bits and pad) - X
+
+Operating modes
+Note: check the upper bits of a virtual address to if 'select' a valid mapped segment (see page 101)
+Modes: Kernel, Supervisor, User
+When switching operating modes: A context switch is performed
+Kernel mode: uses 64-bit addresses
+32-bit mode: uses signed 32-bit addresses
+64-bit User mode: address bits 63:40 must be 0 else throws Address error exception
+Kernel invalid address: using signed 32bit value from user-mode
+UX determine 32/64 mode only for User mode, kernel always uses 64bit mode
+Operating User Mode: KSU bits = 0b10, EXL = 0, ERL = 0
+Operating 64-bit Mode: UX = 1, software uses XTLB, uses XTLB refill exception handlers
+Operating 32-bit Mode: UX = 0, software uses TLB, uses TLB refill exception handlers
+
+User Mode Virtual Address space (32-bit)
+2 GB TLB Mapped:   0x0000 0000 - 0x7FFF FFFF
+Address Error:     0x8000 0000 - 0xFFFF FFFF
+
+User Mode Virtual Address space (64-bit)
+1 TB TLB Mapped:   0x0000 0000 0000 0000 - 0x0000 00FF FFFF FFFF
+Address Error: 0x0000 0100 0000 0000 - 0xFFFF FFFF FFFF FFFF
+
+Supervisor Mode:
+Used for layered operating systems
+Mode when KSU = 0b01, EXL = 0, ERL = 0
+32bit Mode: SX = 0, with TLB cache and handlers
+64bit Mode: SX = 1, with XTLB cache and handlers
+Cannot add addresses that overflow 32bit space
+
+Supervisor 32bit virtual address space
+2 GB TLB Mapped:   0x0000 0000 - 0x7FFF FFFF
+Address Error:     0x8000 0000 - 0x9FFF FFFF
+Address Error:     0xA000 0000 - 0xBFFF FFFF
+0.5 TLB Mapped:    0xC000 0000 - 0xDFFF FFFF
+Address Error:     0xE000 0000 - 0xFFFF FFFF
+
+Supervisor 64bit virtual address space
+1 TB TLB Mapped:   0x0000 0000 0000 0000 - 0x0000 00FF FFFF FFFF
+Address Error:     0x0000 0100 0000 0000 - 0x3FFF FFFF FFFF FFFF
+1 TB TLB Mapped:   0x4000 0000 0000 0000 - 0x4000 00FF FFFF FFFF
+Address Error:     0x4000 0100 0000 0000 - 0xFFFF FFFF BFFF FFFF
+0.5 GB TLB Mapped: 0xFFFF FFFF C000 0000 - 0xFFFF FFFF DFFF FFFF
+Address Error:     0xFFFF FFFF E000 0000 - 0xFFFF FFFF FFFF FFFF
+
+Kernel Mode:
+When handling an exception, kernel mode is entered
+ERET register holds PC address of where to return after exception handlers
+When one of these values are true: KSU = 0b00, EXL = 1, ERL = 1
+32-bit: Uses valid 32-bit valid addresses, overflow in adding results address error
+64-bit: Signed 32bit results address error
+TODO: pg106
+
+Kernel 32-bit Virtual Address Space (N64 is forced to operate kernel only in this mode):
+A(31:29) = 0b000 -> 2 GB TLB Mapped:           0x0000 0000 - 0x7FFF FFFF
+A(31:29) = 0b100 -> 0.5 GB Unmapped, Cached:   0x8000 0000 - 0x9FFF FFFF <- Physical memory bus with cache line (RCP SysAD)
+A(31:29) = 0b101 -> 0.5 GB Unmapped, Uncached: 0xA000 0000 - 0xBFFF FFFF <- Physical memory bus (RCP SysAD), cache line bypass
+A(31:29) = 0b110 -> 0.5 GB TLB Mapped:         0xC000 0000 - 0xDFFF FFFF
+A(31:29) = 0b111 -> 0.5 GB TLB Mapped:         0xE000 0000 - 0xFFFF FFFF
+
+Kernel 64-bit Virtual Address Space (Not used in N64):
+1 TB TLB Mapped:    0x0000 0000 0000 0000 - 0x0000 00FF FFFF FFFF
+Address Error:      0x0000 0100 0000 0000 - 0x3FFF FFFF FFFF FFFF
+1 TB TLB Mapped:    0x4000 0000 0000 0000 - 0x4000 00FF FFFF FFFF
+Address Error:      0x4000 0100 0000 0000 - 0x7FFF FFFF FFFF FFFF
+Unmapped:           0x8000 0000 0000 0000 - 0xBFFF FFFF FFFF FFFF
+TLB Mapped:         0xC000 0000 0000 0000 - 0xC000 00FF 7FFF FFFF
+Address Error:      0xC000 00FF 8000 0000 - 0xFFFF FFFF 7FFF FFFF
+Unmapped, Cached:   0xFFFF FFFF 8000 0000 - 0xFFFF FFFF 9FFF FFFF
+Unmapped, Uncached: 0xFFFF FFFF A000 0000 - 0xFFFF FFFF BFFF FFFF
+0.5 GB TLB Mapped:  0xFFFF FFFF C000 0000 - 0xFFFF FFFF DFFF FFFF
+0.5 GB TLB Mapped:  0xFFFF FFFF E000 0000 - 0xFFFF FFFF FFFF FFFF
+
+TLB Virtual Address Composition: VPN (number of bits = 2 ^ X), Offset (number of bits = address size - (2 ^ X))
+Convert VPN Mask to Page Size: MASK + 1 = size
+Convert back: page size - 1
+
+All page sizes are inheritly multiples of 2, which means in binary, you can evenly mask
+out all bits that result a number larger than or equal to the max size of the page (since address starts at 0)
+If page size is 4 (0b100), then size - 1 == 0b011, so the highest value within the 2 bits is 3, 0 to 4 is 4 different possible values
+
+TLB Entry Details
+VPN2 = VPN / 2, since there is a double amount of available pages in virtual address space due to odd/even PFNs
+R = region; 0b00 -> User, 0b01 -> Supervisor, 0b11 -> Kernel
+MASK = used to mask out VPN and Offset
+G = global; indicates entry must be checked before ASID entries
+PFN Even = The even Page frame number, starts at the first half of the page
+PFN Odd = the odd page frame number, starts at the second half of the page
+PFN -> D = dirty; indicates that the mapped physical page is writeable, else its readonly
+PFN -> C = Coherency; controls the cache attribute on the mapped physical page
+PFN -> V = Valid: This flag indicates the mapped physical page is valid and usable, else a miss happens
+
+TLB Page Cache attributes
+0: Reserved
+1: Reserved
+2: Uncached
+3: Use Cache: Noncoherent - each processor may see different ordered value sequences
+4: Use Cache: Exclusive - No value duplicates exist multiple cache levels
+5: Use Cache: Exclusive on write (sharable) - only written values are on its own cache level
+6: Use Cache: Update on write (update) - 
+7: Reserved
+
+TLB Notes: Reading the doc on TLB can be a bit unclear those learning about it froms scratch
+* All entries with both even/odd PFN Global bits set to 1, counts as a valid global entry and is checked before ASID specific ones
+* ASID of the passed in virtual address comes from EntryHi register, so the operating system must set this up before translation. Used to group process related entries?
+* Every entry contains the mask used to extract and compare the VPN in the virtual address
+* A virtual address is using an even page if its VPN2 masked by (Mask / 2) results the value of 0
+//
+* In general the TLB determines how virtual/physical address space is divided up into pages, so that pages can be swapped in and out of physical memory when not being used
+  That means each page can be determined by the index: VPN.  The MIPS divides these pages even smaller to allow 2 small pages to fit in one main page
+  So a virtual address carries the index of number set: 0 to (MAX_PAGES * 2) - 1, then you divide it by 2 to find the matching entry.  Each entry contains
+  the VPN2 index which ranges from 0 to MAX_PAGES - 1. If VPN2 is less than half size of the page, it uses even PFN else odd.  The cache attribute on the entry
+  can determine if physical memory access will use the cache or not. If it does use cache, it will indicate the cache line mode such as noncoherent or
+  exclusive, etc.  It is important that translation will create an appropiate physical address based on cache attribute, so for example
+  uncached TLB entry means base physical address is 0x8000 0000 in order to bypass the cache.  If 0xA000 0000 is used, cache will be accessed, and
+  TLB needs to set the cache mode appropiate to the entry desired behavior.
+  Note: The N64 doesn't have a real use for TLB because there isn't any available swap memory, a game could use
+  TLB for other purposes.
+//
+* Virtual addresses contain a VPN that is an index of a set where a number is any whole number between 0 and ((VIRTUAL_MEMORY_SIZE / PAGE_SIZE) * 2) - 1
+* The size of each odd and even physical page is going to be the size of PAGE_SIZE / 2
+* Region Control: When CPU is operating in 32-bit mode, fetch all entries.  When in 64-bit mode, the KSU bits are enabled.
+  The entry's KSU bits must match the ones in the status register.
+
+Structure of VPN
+32-bit Mode: [KSU (3bits) VPN]
+64-bit Mode: [KSU (2 bits) Fill(24bits) VPN]
+
+* TLB / MMU and context switching
+* It looks like TLB flushes its cache when changing operating modes on the CPU such as KSU or 32/64 bit mode
+  The operating system would have to swap off all existing pages, and flush TLB and cache line.  So each operating mode could use its own
+  TLB page mode and cache behavior.
+* For N64, I do not see how context switching is possible unless you use a small amount of RAM for switching
+
+TLB Search Algorithm
+1. Iterate through all entries in cache (if 32-bit mode) else ones matching KSU bits in status register (TLB shutdown on duplicate matches),
+2. Read entry's mask to use for comparing values and extracting the offset in the page
+3. if entry is global, go to step 5 if (VAddress.VPN / 2) == ENTRY.VPN2, else go to next step
+4. If entry is not global, go to step 5 if EntryHi.ASID == ENTRY.ASID AND (VAddress.VPN / 2) == ENTRY.VPN2, else miss (TLB refill exception thrown)
+5. If VPN2 is less than page size / 2, get the even PFN, else get odd PFN
+6. If PFN valid bit is 0, then miss else begin address translation
+
+TLB Translation / Load / Store:
+1. Determine the base physical address based on cache Coherency bits in PFN
+2. If using cache: set cache mode, go to step 4
+3. If not using cache: skip to step 4
+4. Compute PAddress: P = (Base + (PFN * PageSize)) + Offset
+5. If reading: if V = 0, throw TLB Load exception otherwise instruct CPU to fetch data from memory
+6. If writing: if V = 0, throw TLB Store exception; if D is set to 1, instruct CPU to write date to memory, else throw TLB store exception;
+
+TLB Registers used during TLB instructions and translation
+//////////////////////////////////////////////////////////////
+PageMask: 32-bit Mode - [0 - 7] [MASK - 12] [0 - 13]
+Mask = Comparison mask / page mode for TLB entry
+000000000000 - 4 KB
+000000000011 - 16 KB
+000000001111 - 64 KB
+000000111111 - 256 KB
+000011111111 - 1 MB
+001111111111 - 4 MB
+111111111111 - 16 MB
+Match Condition: (VPN / 2) & Mask == VPN2
+Some masking math here
+32-bit Mode: Offset in page = 32 - 03 - (20 - num bits on in mask)
+64-bit Mode: Offset in page = 64 - 26 - (28 - num bits on in mask)
+Total Pages: 2 ^ (num bits on)
+Another way to compute offset: Page Size in bytes - 1 will equal number of bits in the offset of a virtual address
+
+Virtual Address Compare with TLB Entry (WIP)
+1. Get Entry.Mask and lookup page size (shift mask right by 13)
+2. Compute offset bit size: page size - 1
+3. Shift virtual address to thge right by size of offset
+4. Divide VPN by 2 to get VPN2
+5. 
+  32-bit: (PageMask & Entry.EntryHi) == VPN2
+  64-bit: (PageMask.SignExtended & Entry.EntryHi) == VPN2
+6. If result is true, then do translation else throw miss
+
+
+EntryHi:  32-bit Mode - [VPN2 - 19] [0 - 5] [ASID - 8]
+          64-bit Mode - [Region - 2] [Fill - 22] [VPN2 - 27] [0 - 5] [ASID - 8]
+VPN2 - Page index for entry (96 / Page Size / 2)
+ASID - Address Space identifier for entry
+Fill - Igored bits, returns 0, write ignored.
+Region - KSU bits for entry
+
+EntryLo0 (Even Page):
+EntryLo1 (Odd Page) : 32-bit Mode - [0 - 2] [PFN - 24] [C - 3] [D - 1] [V - 1] [G - 1]
+                    : 64-bit Mode - [0 - 34] [PFN - 24] [C - 3] [D - 1] [V - 1] [G - 1]
+PFN - Physical Frame Number - index of page of physical address space divided by page size
+C - Coherency Attribute - Controls cache mode for page
+D - Dirty - Whether the page is writable
+V - Valid - If set to 0, it counts as a TLB miss
+G - Global - Entry is part of the global table
+
+Index - Used by Probe, Write, Read TLB instructions
+    : 32-bit Mode - [P - 1] [0 - 25] [Index - 6]
+Index - index of TLB entry for TLB read/write
+P - Probe result - If probe is success then bit is set to 0
+
+Random Register: 32-bit [0 - 26] [Random - 6]
+Read-only register
+Decrements per Instruction cycle
+Value ranges between number of entries reserved by OS and max number of entries
+On Reset, random is to the upper bound
+On write to Wire register, random is set to upper bound
+
+TODO: Wire register at page 118

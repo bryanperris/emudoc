@@ -1,0 +1,54 @@
+Reality-CoProcessor MIPS Chip
+----------------------------------
+Based on MIPS R4200 Core
+5-stage classic RISC pipeline
+16 KB instruction cache
+8KB data cache
+32 entry TLB cache, 4 entry ITLB
+Supports 33-bit addresses
+64-bit wide system bus operating at half of the core frequency
+4 KB of on-chip data memory (DMEM)
+4 KB of on-chip instruction memory (IMEM)
+Vector processor (RSP)
+Rasterizer processor (RDP)
+JTAG Interface
+4 KB of on-chip texture memory (TMEM)
+I believe the RCP is the RSP core, with RDP being some subprocessor that only executes display lists from memory somewhere
+
+RDP
+Rendering: Shaded, Textured, Depth geometry into frame buffer (RDRAM area)
+Executes Display Lists
+Registers to control
+
+RSP
+Vector processing
+Video processing
+Edge Anti-Aliasing
+Texture Mapping
+Realtime Depth buffering
+Audio processing
+IO Transfers: Main Memory <-> IMEM/DMEM
+Executes Audio Lists
+Executes firmware stored in IMEM
+
+A crack guess at RCP's main execution engine
+--------------------------
+On bootup: 
+    * execute PIF ROM (PIF RAM used to execute PIF?)
+    * copy ROM boot (ROM + 0x40) into DMEM + 0x40
+    * Copy and run CIC (SI serial) program on CPU to compute CRC32 on bootcode
+    * If CPU computes seed matching CIC Key, then allow CPU to boot from game
+    * If CPU computes seed doesn't match key, then lock the ColdReset NMI on
+//
+Runtime:
+    * CPU requests RSP to perform IO (copy firmware): RDRAM/ROM -> IMEM
+    * CPU sets SP regs
+    * SP interrupt ?
+    * RSP begins code execution
+    * AI interrupt - send audio packet to audio codec
+    * VI interrupt - send video packet to video codec
+    * PI interrupt - do DMA trasnfer between cartridge/DD and target memory
+    * DP interrupt - get RDP to execute display list or perhaps IO with TMEM
+    * SI interrupt - do DMA trasnfer between targeted devices (some emulators may delay the interrupt for speed-wise issues)
+    * SP interrupt - get RSP to process audio list, or some other function
+ MIPS CPU compares 2 registers, which then determines to schedule a MI interrupt.
